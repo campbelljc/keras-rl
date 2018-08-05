@@ -8,7 +8,7 @@ import numpy as np
 
 # This is to be understood as a transition: Given `state0`, performing `action`
 # yields `reward` and results in `state1`, which might be `terminal`.
-Experience = namedtuple('Experience', 'state0, action, reward, state1, terminal1')
+Experience = namedtuple('Experience', 'state0, action, reward, state1, terminal1, valid_acts')
 
 
 def sample_batch_indexes(low, high, size):
@@ -114,7 +114,7 @@ class Memory(object):
     def sample(self, batch_size, batch_idxs=None):
         raise NotImplementedError()
 
-    def append(self, observation, action, reward, terminal, training=True):
+    def append(self, observation, action, reward, terminal, valid_action_indices, training=True):
         self.recent_observations.append(observation)
         self.recent_terminals.append(terminal)
 
@@ -168,6 +168,7 @@ class SequentialMemory(Memory):
         self.rewards = RingBuffer(limit)
         self.terminals = RingBuffer(limit)
         self.observations = RingBuffer(limit)
+        self.valid_acts = RingBuffer(limit)
 
     def sample(self, batch_size, batch_idxs=None):
         """Return a randomized batch of experiences
@@ -231,15 +232,17 @@ class SequentialMemory(Memory):
             # episode if the last state is terminal.
             state1 = [np.copy(x) for x in state0[1:]]
             state1.append(self.observations[idx])
+            
+            valid_acts = self.valid_acts[idx]
 
             assert len(state0) == self.window_length
             assert len(state1) == len(state0)
             experiences.append(Experience(state0=state0, action=action, reward=reward,
-                                          state1=state1, terminal1=terminal1))
+                                          state1=state1, terminal1=terminal1, valid_acts=valid_acts))
         assert len(experiences) == batch_size
         return experiences
 
-    def append(self, observation, action, reward, terminal, training=True):
+    def append(self, observation, action, reward, terminal, valid_action_indices, training=True):
         """Append an observation to the memory
 
         # Argument
@@ -248,7 +251,7 @@ class SequentialMemory(Memory):
             reward (float): Reward obtained by taking this action
             terminal (boolean): Is the state terminal
         """ 
-        super(SequentialMemory, self).append(observation, action, reward, terminal, training=training)
+        super(SequentialMemory, self).append(observation, action, reward, terminal, valid_action_indices, training=training)
         
         # This needs to be understood as follows: in `observation`, take `action`, obtain `reward`
         # and weather the next state is `terminal` or not.
@@ -257,6 +260,7 @@ class SequentialMemory(Memory):
             self.actions.append(action)
             self.rewards.append(reward)
             self.terminals.append(terminal)
+            self.valid_acts.append(valid_action_indices)
 
     @property
     def nb_entries(self):

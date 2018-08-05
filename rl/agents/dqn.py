@@ -222,14 +222,17 @@ class DQNAgent(AbstractDQNAgent):
     def update_target_model_hard(self):
         self.target_model.set_weights(self.model.get_weights())
 
-    def forward(self, observation):
+    def forward(self, observation, valid_action_indices):
         # Select an action.
         state = self.memory.get_recent_state(observation)
         q_values = self.compute_q_values(state)
-        if self.training:
-            action = self.policy.select_action(q_values=q_values)
+        if len(valid_action_indices) == 0:
+            action = None
         else:
-            action = self.test_policy.select_action(q_values=q_values)
+            if self.training:
+                action = self.policy.select_action(q_values=q_values, valid_action_indices=valid_action_indices)
+            else:
+                action = self.test_policy.select_action(q_values=q_values, valid_action_indices=valid_action_indices)
 
         # Book-keeping.
         self.recent_observation = observation
@@ -237,11 +240,11 @@ class DQNAgent(AbstractDQNAgent):
 
         return action
 
-    def backward(self, reward, terminal):
+    def backward(self, reward, valid_action_indices, terminal):
         # Store most recent experience in memory.
         if self.step % self.memory_interval == 0:
             self.memory.append(self.recent_observation, self.recent_action, reward, terminal,
-                               training=self.training)
+                               valid_action_indices, training=self.training)
 
         metrics = [np.nan for _ in self.metrics_names]
         if not self.training:
@@ -260,9 +263,11 @@ class DQNAgent(AbstractDQNAgent):
             action_batch = []
             terminal1_batch = []
             state1_batch = []
+            validact_batch = []
             for e in experiences:
                 state0_batch.append(e.state0)
                 state1_batch.append(e.state1)
+                validact_batch.append(e.valid_acts)
                 reward_batch.append(e.reward)
                 action_batch.append(e.action)
                 terminal1_batch.append(0. if e.terminal1 else 1.)
@@ -272,6 +277,7 @@ class DQNAgent(AbstractDQNAgent):
             state1_batch = self.process_state_batch(state1_batch)
             terminal1_batch = np.array(terminal1_batch)
             reward_batch = np.array(reward_batch)
+            validact_batch = np.array(validact_batch)
             assert reward_batch.shape == (self.batch_size,)
             assert terminal1_batch.shape == reward_batch.shape
             assert len(action_batch) == len(reward_batch)
@@ -283,6 +289,15 @@ class DQNAgent(AbstractDQNAgent):
                 # while the target network is used to estimate the Q value.
                 q_values = self.model.predict_on_batch(state1_batch)
                 assert q_values.shape == (self.batch_size, self.nb_actions)
+                
+                for i in range(self.batch_size):
+                    # ref: https://stackoverflow.com/questions/25330959/how-to-select-inverse-of-indexes-of-a-numpy-array
+                    if len(validact_batch[i]) > 0: 
+                        # if no valid actions, must be a terminal state, so it doesn't matter what we do to the qvalues.
+                        mask = np.ones(len(q_values[i]), np.bool)
+                        mask[validact_batch[i]] = 0
+                        q_values[i][mask] = -100
+                
                 actions = np.argmax(q_values, axis=1)
                 assert actions.shape == (self.batch_size,)
 

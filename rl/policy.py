@@ -58,6 +58,7 @@ class LinearAnnealedPolicy(Policy):
         self.value_min = value_min
         self.value_test = value_test
         self.nb_steps = nb_steps
+        self.name = inner_policy.name + str(value_max) + 'to' + str(value_min)
 
     def get_current_value(self):
         """Return current annealing value

@@ -99,6 +99,11 @@ class CallbackList(KerasCallbackList):
         for callback in self.callbacks:
             if callable(getattr(callback, 'on_action_end', None)):
                 callback.on_action_end(action, logs=logs)
+    
+    def save_data(self):
+        for callback in self.callbacks:
+            if callable(getattr(callback, 'save_data', None)):
+                callback.save_data()
 
 
 class TestLogger(Callback):
@@ -216,6 +221,7 @@ class TrainIntervalLogger(Callback):
     def __init__(self, interval=10000):
         self.interval = interval
         self.step = 0
+        self.num_episodes = 0
         self.reset()
 
     def reset(self):
@@ -231,7 +237,7 @@ class TrainIntervalLogger(Callback):
         """ Initialize training statistics at beginning of training """
         self.train_start = timeit.default_timer()
         self.metrics_names = self.model.metrics_names
-        print('Training for {} steps ...'.format(self.params['nb_steps']))
+        print('Training for {} steps (or {} episodes) ...'.format(self.params['nb_steps'], self.params['nb_episodes']))
 
     def on_train_end(self, logs):
         """ Print training duration at end of training """
@@ -260,6 +266,7 @@ class TrainIntervalLogger(Callback):
                         for name, mean in zip(self.info_names, means):
                             formatted_infos += ' - {}: {:.3f}'.format(name, mean)
                 print('{} episodes - episode_reward: {:.3f} [{:.3f}, {:.3f}]{}{}'.format(len(self.episode_rewards), np.mean(self.episode_rewards), np.min(self.episode_rewards), np.max(self.episode_rewards), formatted_metrics, formatted_infos))
+                print('Total eps done: {}/{} ({:.2f}%)'.format(self.num_episodes, self.params['nb_episodes'], (self.num_episodes/self.params['nb_episodes'])*100))
                 print('')
             self.reset()
             print('Interval {} ({} steps performed)'.format(self.step // self.interval + 1, self.step))
@@ -281,6 +288,7 @@ class TrainIntervalLogger(Callback):
     def on_episode_end(self, episode, logs):
         """ Update reward value at the end of each episode """
         self.episode_rewards.append(logs['episode_reward'])
+        self.num_episodes += 1
 
 
 class FileLogger(Callback):

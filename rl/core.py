@@ -50,7 +50,7 @@ class Agent(object):
         """
         return {}
 
-    def fit(self, env, nb_steps, action_repetition=1, callbacks=None, verbose=1,
+    def fit(self, env, nb_steps, nb_episodes=-1, action_repetition=1, callbacks=None, verbose=1,
             visualize=False, nb_max_start_steps=0, start_step_policy=None, log_interval=10000,
             nb_max_episode_steps=None):
         """Trains the agent on the given environment.
@@ -106,6 +106,7 @@ class Agent(object):
         callbacks._set_env(env)
         params = {
             'nb_steps': nb_steps,
+            'nb_episodes': nb_episodes
         }
         if hasattr(callbacks, 'set_params'):
             callbacks.set_params(params)
@@ -121,112 +122,128 @@ class Agent(object):
         episode_step = None
         did_abort = False
         try:
-            while self.step < nb_steps:
-                if observation is None:  # start of a new episode
-                    callbacks.on_episode_begin(episode)
-                    episode_step = np.int16(0)
-                    episode_reward = np.float32(0)
+            def end_ep(cur_episode, cur_step):
+                return cur_episode >= nb_episodes
+            def end_act(cur_episode, cur_step):
+                return cur_step >= nb_steps
+            should_end = end_act if nb_episodes == -1 else end_ep
+        
+            cur_episode = 0
+            while True:
+                if should_end(cur_episode, self.step):
+                    break
+                cur_episode += 1
+                done = False
+                while not done:
+                    if observation is None:  # start of a new episode
+                        callbacks.on_episode_begin(episode)
+                        episode_step = np.int16(0)
+                        episode_reward = np.float32(0)
 
-                    # Obtain the initial observation by resetting the environment.
-                    self.reset_states()
-                    observation = deepcopy(env.reset())
-                    if self.processor is not None:
-                        observation = self.processor.process_observation(observation)
+                        # Obtain the initial observation by resetting the environment.
+                        self.reset_states()
+                        observation, valid_action_indices = deepcopy(env.reset())
+                        if self.processor is not None:
+                            observation = self.processor.process_observation(observation)
+                        assert observation is not None
+
+                        # Perform random starts at beginning of episode and do not record them into the experience.
+                        # This slightly changes the start position between games.
+                        nb_random_start_steps = 0 if nb_max_start_steps == 0 else np.random.randint(nb_max_start_steps)
+                        for _ in range(nb_random_start_steps):
+                            if start_step_policy is None:
+                                action = env.action_space.sample()
+                            else:
+                                action = start_step_policy(observation)
+                            if self.processor is not None:
+                                action = self.processor.process_action(action)
+                            callbacks.on_action_begin(action)
+                            observation, reward, done, info, valid_action_indices = env.step(action)
+                            observation = deepcopy(observation)
+                            if self.processor is not None:
+                                observation, reward, done, info = self.processor.process_step(observation, reward, done, info)
+                            callbacks.on_action_end(action)
+                            if done:
+                                warnings.warn('Env ended before {} random steps could be performed at the start. You should probably lower the `nb_max_start_steps` parameter.'.format(nb_random_start_steps))
+                                observation. valid_action_indices = deepcopy(env.reset())
+                                if self.processor is not None:
+                                    observation = self.processor.process_observation(observation)
+                                break
+
+                    # At this point, we expect to be fully initialized.
+                    assert episode_reward is not None
+                    assert episode_step is not None
                     assert observation is not None
 
-                    # Perform random starts at beginning of episode and do not record them into the experience.
-                    # This slightly changes the start position between games.
-                    nb_random_start_steps = 0 if nb_max_start_steps == 0 else np.random.randint(nb_max_start_steps)
-                    for _ in range(nb_random_start_steps):
-                        if start_step_policy is None:
-                            action = env.action_space.sample()
-                        else:
-                            action = start_step_policy(observation)
-                        if self.processor is not None:
-                            action = self.processor.process_action(action)
+                    # Run a single step.
+                    callbacks.on_step_begin(episode_step)
+                    # This is were all of the work happens. We first perceive and compute the action
+                    # (forward step) and then use the reward to improve (backward step).
+                    action = self.forward(observation, valid_action_indices)
+                    if self.processor is not None:
+                        action = self.processor.process_action(action)
+                    reward = np.float32(0)
+                    accumulated_info = {}
+                    done = False
+                    for _ in range(action_repetition):
                         callbacks.on_action_begin(action)
-                        observation, reward, done, info = env.step(action)
+                        observation, r, done, info, valid_action_indices = env.step(action)
+                        assert done or len(valid_action_indices) > 0
                         observation = deepcopy(observation)
                         if self.processor is not None:
-                            observation, reward, done, info = self.processor.process_step(observation, reward, done, info)
+                            observation, r, done, info = self.processor.process_step(observation, r, done, info)
+                        for key, value in info.items():
+                            if not np.isreal(value):
+                                continue
+                            if key not in accumulated_info:
+                                accumulated_info[key] = np.zeros_like(value)
+                            accumulated_info[key] += value
                         callbacks.on_action_end(action)
+                        reward += r
                         if done:
-                            warnings.warn('Env ended before {} random steps could be performed at the start. You should probably lower the `nb_max_start_steps` parameter.'.format(nb_random_start_steps))
-                            observation = deepcopy(env.reset())
-                            if self.processor is not None:
-                                observation = self.processor.process_observation(observation)
                             break
+                    if nb_max_episode_steps and episode_step >= nb_max_episode_steps - 1:
+                        # Force a terminal state.
+                        done = True
+                    metrics = self.backward(reward, valid_action_indices, terminal=done)
+                    episode_reward += reward
 
-                # At this point, we expect to be fully initialized.
-                assert episode_reward is not None
-                assert episode_step is not None
-                assert observation is not None
-
-                # Run a single step.
-                callbacks.on_step_begin(episode_step)
-                # This is were all of the work happens. We first perceive and compute the action
-                # (forward step) and then use the reward to improve (backward step).
-                action = self.forward(observation)
-                if self.processor is not None:
-                    action = self.processor.process_action(action)
-                reward = np.float32(0)
-                accumulated_info = {}
-                done = False
-                for _ in range(action_repetition):
-                    callbacks.on_action_begin(action)
-                    observation, r, done, info = env.step(action)
-                    observation = deepcopy(observation)
-                    if self.processor is not None:
-                        observation, r, done, info = self.processor.process_step(observation, r, done, info)
-                    for key, value in info.items():
-                        if not np.isreal(value):
-                            continue
-                        if key not in accumulated_info:
-                            accumulated_info[key] = np.zeros_like(value)
-                        accumulated_info[key] += value
-                    callbacks.on_action_end(action)
-                    reward += r
-                    if done:
-                        break
-                if nb_max_episode_steps and episode_step >= nb_max_episode_steps - 1:
-                    # Force a terminal state.
-                    done = True
-                metrics = self.backward(reward, terminal=done)
-                episode_reward += reward
-
-                step_logs = {
-                    'action': action,
-                    'observation': observation,
-                    'reward': reward,
-                    'metrics': metrics,
-                    'episode': episode,
-                    'info': accumulated_info,
-                }
-                callbacks.on_step_end(episode_step, step_logs)
-                episode_step += 1
-                self.step += 1
-
-                if done:
-                    # We are in a terminal state but the agent hasn't yet seen it. We therefore
-                    # perform one more forward-backward call and simply ignore the action before
-                    # resetting the environment. We need to pass in `terminal=False` here since
-                    # the *next* state, that is the state of the newly reset environment, is
-                    # always non-terminal by convention.
-                    self.forward(observation)
-                    self.backward(0., terminal=False)
-
-                    # This episode is finished, report and reset.
-                    episode_logs = {
-                        'episode_reward': episode_reward,
-                        'nb_episode_steps': episode_step,
-                        'nb_steps': self.step,
+                    step_logs = {
+                        'action': action,
+                        'observation': observation,
+                        'reward': reward,
+                        'metrics': metrics,
+                        'episode': episode,
+                        'info': accumulated_info,
                     }
-                    callbacks.on_episode_end(episode, episode_logs)
+                    callbacks.on_step_end(episode_step, step_logs)
+                    episode_step += 1
+                    self.step += 1
 
-                    episode += 1
-                    observation = None
-                    episode_step = None
-                    episode_reward = None
+                    if done:
+                        # We are in a terminal state but the agent hasn't yet seen it. We therefore
+                        # perform one more forward-backward call and simply ignore the action before
+                        # resetting the environment. We need to pass in `terminal=False` here since
+                        # the *next* state, that is the state of the newly reset environment, is
+                        # always non-terminal by convention.
+                        
+                        # current observation(state) must be added to exp replay buffer to be used as state' in prev. tuple
+                        # action indices dont matter since it wouldnt be used as state (no ') in tuple
+                        self.forward(observation, valid_action_indices)
+                        self.backward(0., valid_action_indices, terminal=False)
+
+                        # This episode is finished, report and reset.
+                        episode_logs = {
+                            'episode_reward': episode_reward,
+                            'nb_episode_steps': episode_step,
+                            'nb_steps': self.step,
+                        }
+                        callbacks.on_episode_end(episode, episode_logs)
+
+                        episode += 1
+                        observation = None
+                        episode_step = None
+                        episode_reward = None
         except KeyboardInterrupt:
             # We catch keyboard interrupts here so that training can be be safely aborted.
             # This is so common that we've built this right into this function, which ensures that
@@ -306,7 +323,7 @@ class Agent(object):
 
             # Obtain the initial observation by resetting the environment.
             self.reset_states()
-            observation = deepcopy(env.reset())
+            observation, valid_action_indices = deepcopy(env.reset())
             if self.processor is not None:
                 observation = self.processor.process_observation(observation)
             assert observation is not None
@@ -322,14 +339,14 @@ class Agent(object):
                 if self.processor is not None:
                     action = self.processor.process_action(action)
                 callbacks.on_action_begin(action)
-                observation, r, done, info = env.step(action)
+                observation, r, done, info, valid_action_indices = env.step(action)
                 observation = deepcopy(observation)
                 if self.processor is not None:
                     observation, r, done, info = self.processor.process_step(observation, r, done, info)
                 callbacks.on_action_end(action)
                 if done:
                     warnings.warn('Env ended before {} random steps could be performed at the start. You should probably lower the `nb_max_start_steps` parameter.'.format(nb_random_start_steps))
-                    observation = deepcopy(env.reset())
+                    observation, valid_action_indices = deepcopy(env.reset())
                     if self.processor is not None:
                         observation = self.processor.process_observation(observation)
                     break
@@ -339,14 +356,14 @@ class Agent(object):
             while not done:
                 callbacks.on_step_begin(episode_step)
 
-                action = self.forward(observation)
+                action = self.forward(observation, valid_action_indices)
                 if self.processor is not None:
                     action = self.processor.process_action(action)
                 reward = 0.
                 accumulated_info = {}
                 for _ in range(action_repetition):
                     callbacks.on_action_begin(action)
-                    observation, r, d, info = env.step(action)
+                    observation, r, d, info, valid_action_indices = env.step(action)
                     observation = deepcopy(observation)
                     if self.processor is not None:
                         observation, r, d, info = self.processor.process_step(observation, r, d, info)
@@ -363,7 +380,7 @@ class Agent(object):
                         break
                 if nb_max_episode_steps and episode_step >= nb_max_episode_steps - 1:
                     done = True
-                self.backward(reward, terminal=done)
+                self.backward(reward, valid_action_indices, terminal=done)
                 episode_reward += reward
 
                 step_logs = {
@@ -382,8 +399,8 @@ class Agent(object):
             # resetting the environment. We need to pass in `terminal=False` here since
             # the *next* state, that is the state of the newly reset environment, is
             # always non-terminal by convention.
-            self.forward(observation)
-            self.backward(0., terminal=False)
+            self.forward(observation, valid_action_indices)
+            self.backward(0., valid_action_indices, terminal=False)
 
             # Report end of episode.
             episode_logs = {
@@ -401,7 +418,7 @@ class Agent(object):
         """
         pass
 
-    def forward(self, observation):
+    def forward(self, observation, valid_action_indices):
         """Takes the an observation from the environment and returns the action to be taken next.
         If the policy is implemented by a neural network, this corresponds to a forward (inference) pass.
 
