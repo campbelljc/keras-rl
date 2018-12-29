@@ -87,6 +87,10 @@ class Agent(object):
             raise ValueError('action_repetition must be >= 1, is {}'.format(action_repetition))
 
         self.training = True
+        self.env = env
+        self.env.agent = self
+        self.env.policy = self.policy
+        self.env.policy.env = self.env
 
         callbacks = [] if not callbacks else callbacks[:]
 
@@ -120,6 +124,7 @@ class Agent(object):
         observation = None
         episode_reward = None
         episode_step = None
+        self.episode_step = episode_step
         did_abort = False
         try:
             def end_ep(cur_episode, cur_step):
@@ -139,6 +144,7 @@ class Agent(object):
                         callbacks.on_episode_begin(episode)
                         episode_step = np.int16(0)
                         episode_reward = np.float32(0)
+                        self.episode_step = 0
 
                         # Obtain the initial observation by resetting the environment.
                         self.reset_states()
@@ -218,6 +224,7 @@ class Agent(object):
                     }
                     callbacks.on_step_end(episode_step, step_logs)
                     episode_step += 1
+                    self.episode_step = episode_step
                     self.step += 1
 
                     if done:
@@ -291,6 +298,10 @@ class Agent(object):
 
         self.training = False
         self.step = 0
+        self.env = env
+        self.env.agent = self
+        self.env.policy = self.policy
+        self.env.policy.env = self.env
 
         callbacks = [] if not callbacks else callbacks[:]
 
@@ -320,6 +331,7 @@ class Agent(object):
             callbacks.on_episode_begin(episode)
             episode_reward = 0.
             episode_step = 0
+            self.episode_step = 0
 
             # Obtain the initial observation by resetting the environment.
             self.reset_states()
@@ -393,6 +405,7 @@ class Agent(object):
                 callbacks.on_step_end(episode_step, step_logs)
                 episode_step += 1
                 self.step += 1
+                self.episode_step = episode_step
 
             # We are in a terminal state but the agent hasn't yet seen it. We therefore
             # perform one more forward-backward call and simply ignore the action before
