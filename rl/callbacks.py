@@ -105,7 +105,6 @@ class CallbackList(KerasCallbackList):
             if callable(getattr(callback, 'save_data', None)):
                 callback.save_data()
 
-
 class TestLogger(Callback):
     """ Logger Class for Test """
     def on_train_begin(self, logs):

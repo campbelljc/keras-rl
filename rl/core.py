@@ -171,7 +171,7 @@ class Agent(object):
                             callbacks.on_action_end(action)
                             if done:
                                 warnings.warn('Env ended before {} random steps could be performed at the start. You should probably lower the `nb_max_start_steps` parameter.'.format(nb_random_start_steps))
-                                observation. valid_action_indices = deepcopy(env.reset())
+                                observation, valid_action_indices = deepcopy(env.reset())
                                 if self.processor is not None:
                                     observation = self.processor.process_observation(observation)
                                 break
@@ -236,6 +236,7 @@ class Agent(object):
                         
                         # current observation(state) must be added to exp replay buffer to be used as state' in prev. tuple
                         # action indices dont matter since it wouldnt be used as state (no ') in tuple
+                        
                         self.forward(observation, valid_action_indices)
                         self.backward(0., valid_action_indices, terminal=False)
 
